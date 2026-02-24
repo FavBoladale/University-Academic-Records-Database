@@ -11,10 +11,14 @@ To design and implement a structured university academic database supporting:
 - Results & grading
 - GPA computation
 
+# Business Rules
+- A student cannot enroll in the same course twice in the same semester.
+- Total score is CA + Exam.
+- Scores must fall within defined ranges.
+- CourseCode must be unique.
+
 ## Data Modeling Approach
-
 This project follows:
-
 - Conceptual Data Modeling
 - Logical Data Modeling (3NF normalization)
 - Physical Implementation in SQL
