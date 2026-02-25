@@ -1,490 +1,728 @@
-# 🎓 LuxUniversity DB
+# LuxUniversity DB
 
-> A comprehensive, production-grade university database system modelled on the **Obafemi Awolowo University (OAU)** faculty structure — built for Microsoft SQL Server.
+> A production-grade university database system modelled on **Obafemi Awolowo University (OAU)** — built for Microsoft SQL Server with a proper two-tier architecture: OLTP source of truth + OLAP data warehouse.
 
 ![SQL Server](https://img.shields.io/badge/Microsoft%20SQL%20Server-2016%2B-blue?logo=microsoftsqlserver)
-![Azure SQL](https://img.shields.io/badge/Azure%20SQL-Supported-0078D4?logo=microsoftazure)
+![Azure SQL](https://img.shields.io/badge/Azure%20SQL-Compatible-0078D4?logo=microsoftazure)
+![Architecture](https://img.shields.io/badge/Architecture-OLTP%20%2B%20OLAP-purple)
+![Security](https://img.shields.io/badge/Security-Row--Level%20Security-red)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-1. [Project Overview](#1-project-overview)
+1. [Architecture Overview](#1-architecture-overview)
 2. [Quick Start](#2-quick-start)
-3. [Institutional Structure](#3-institutional-structure-oau)
-4. [Schema Design](#4-schema-design)
-5. [Course System](#5-course-system)
-6. [Business Rules](#6-business-rules--enforcement)
-7. [Stored Procedures](#7-stored-procedures)
-8. [Views](#8-views)
-9. [Analytical Queries](#9-analytical-queries-dimensional-model)
-10. [File Guide](#10-file-guide)
-11. [Matric Number Format](#11-matric-number-format)
-12. [Extending the Database](#12-extending-the-database)
-13. [Developer Notes](#13-developer-notes)
+3. [File Guide](#4-file-guide)
+5. [OLTP Database — luxuniversity_db](#5-oltp-database--luxuniversity_db)
+6. [Data Warehouse — luxuniversity_dw](#6-data-warehouse--luxuniversity_dw)
+7. [ETL Pipeline](#7-etl-pipeline)
+8. [Row-Level Security](#8-row-level-security)
+9. [Data Quality Framework](#9-data-quality-framework)
+10. [Reporting Layer](#10-reporting-layer-rpt-schema)
+11. [Institutional Structure](#11-institutional-structure-oau)
+12. [Course System](#12-course-system)
+13. [Business Rules](#13-business-rules--enforcement)
+14. [Stored Procedures](#14-stored-procedures)
+15. [Analytical Queries](#15-analytical-queries)
+16. [Design Decisions](#16-design-decisions)
+17. [Known Limitations & Roadmap](#17-known-limitations--roadmap)
 
 ---
 
-## 1. Project Overview
+## 1. Architecture Overview
 
-**LuxUniversity DB** is a fully structured relational database for managing university academic operations. It covers student enrolment, course registration, grading, staff management, prerequisite enforcement, and analytics — all backed by real database-layer constraints and stored procedures.
+This project separates transactional and analytical workloads into two dedicated databases — the correct production architecture for any data platform.
 
-The system is built on **two distinct layers**:
-
-| Layer | Purpose |
-|---|---|
-| **OLTP (Transactional)** | Day-to-day operations — registration, results, promotions, staff assignments |
-| **Dimensional (Star Schema)** | Analytics and BI — GPA trends, faculty performance, compliance reporting |
-
-### At a Glance
-
-| Property | Detail |
-|---|---|
-| Database Name | `luxuniversity_db` |
-| RDBMS | Microsoft SQL Server 2016+ / Azure SQL Database |
-| Collation | `Latin1_General_CI_AS` |
-| Faculties Modelled | 14 (all OAU faculties, including CHS sub-faculties) |
-| Total Tables | 26 OLTP + 6 Dimensional = **32 tables** |
-| Views | 4 |
-| Stored Procedures | 4 |
-| Indexes | 11 performance indexes |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      APPLICATION LAYER                          │
+│              Student Portal  |  Staff Portal  |  Registry       │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │  read/write
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  luxuniversity_db  (OLTP)                        │
+│                                                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐    │
+│  │   Students   │  │  Courses &   │  │  Registration &    │    │
+│  │   & Staff    │  │  Prerequisites│  │  Results           │    │
+│  └──────────────┘  └──────────────┘  └────────────────────┘    │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Row-Level Security  |  Temporal Tables  |  DQ Checks   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │  Incremental ETL (daily/hourly)
+                            │  04_etl_incremental.sql
+                            │  → SCD Type 2 on dim_student
+                            │  → High-water mark per entity
+                            │  → DQ gate before every load
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  luxuniversity_dw  (OLAP)                        │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  dim_student  │  dim_course  │  dim_academic_period  │   │  │
+│  │  dim_staff    │  dim_date    │  dim_geography         │   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                            ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  fact_enrollment  │  fact_student_gpa  │  fact_reg_event │  │
+│  │  (CLUSTERED COLUMNSTORE INDEX — 10-100x faster)          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                            ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              rpt.* — KPI Views for Dashboards             │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                            │  read-only
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              BI / Reporting Layer                                │
+│         Power BI  |  Excel  |                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
+
 
 ## 2. Quick Start
 
 ### Prerequisites
 
-- Microsoft SQL Server 2016+ **or** Azure SQL Database
-- SQL Server Management Studio (SSMS 18+) or Azure Data Studio
+- Microsoft SQL Server 2016+ or Azure SQL Database
+- SQL Server Management Studio (SSMS 18+) 
 - A login with `dbcreator` or `sysadmin` rights
+- Both databases must be on the **same SQL Server instance** (ETL uses cross-database queries)
 
-### Installation
 
-```sql
--- Step 1: Run DDL (creates DB, all tables, views, procedures, indexes)
--- Open and execute: 01_create_tables.sql
+---
 
--- Step 2: Load sample data
--- Open and execute: 02_insert_sample_data.sql
+## 3. File Guide
+
+```
+luxuniversity_db/
+├── 01_create_oltp.sql          ← Run first
+├── 02_create_dw.sql            ← Run second
+├── 03_insert_sample_data.sql   ← Run third
+├── 04_etl_incremental.sql      ← Run fourth (or schedule)
+├── 05_row_level_security.sql   ← Optional: users & RLS
+├── 06_reporting_layer.sql      ← Optional: extra rpt views
+└── README.md                   ← This file
 ```
 
-### Verify Installation
+| File | What it Creates | Key Features |
+|---|---|---|
+| `01_create_oltp.sql` | `luxuniversity_db` | 20 OLTP tables, 4 views, 4 stored procedures, temporal student table, RLS function + policy, ETL watermark table, DQ log table, extended properties, 14 performance indexes |
+| `02_create_dw.sql` | `luxuniversity_dw` | 6 dimension tables, 3 fact tables with clustered columnstore indexes, `rpt` schema with 7 KPI views, `etl_log` table, Nigerian state geography dimension |
+| `03_insert_sample_data.sql` | Seed data | Grade scale, 7 levels, 11 degree types, 14 faculties, 50+ departments, 50+ programmes, 100+ courses with descriptions, prerequisites, 10 students, 24+ registrations, 5 results, staff |
+| `04_etl_incremental.sql` | ETL engine | `etl` schema, master proc `etl.sp_run_incremental_etl`, 8 sub-procedures (dim_date, dim_course, dim_period, dim_staff, SCD2 dim_student, fact_enrollment, fact_gpa, fact_reg_events), 10 DQ checks |
+| `05_row_level_security.sql` | RBAC | 4 database roles, sample logins, `security_user_map` population, RLS policy enabled |
+| `06_reporting_layer.sql` | Extra `rpt.*` views | Department GPA ranking, lecturer performance, programme completion rates, semester capacity |
+
+---
+
+## 4. OLTP Database — luxuniversity_db
+
+### Schema Map
+
+```
+REFERENCE TABLES              INSTITUTIONAL STRUCTURE
+─────────────────             ───────────────────────
+academic_session              college
+semester                        └─ faculty
+student_level                        └─ department
+degree_type                               └─ programme
+grade_scale
+course_category               COURSE CATALOG
+                              ─────────────
+STUDENT                       course
+─────────                       ├─ course_prerequisite
+student  ◄── TEMPORAL TABLE     └─ programme_course
+  └─ student_history
+  └─ student_level_history    OPERATIONS
+                              ──────────
+STAFF                         course_registration
+─────                           └─ course_result
+staff                           └─ registration_audit
+  └─ course_assignment
+                              INFRASTRUCTURE
+                              ──────────────
+                              etl_watermark
+                              dq_check_log
+                              security_user_map
+```
+
+### Temporal Table — Full Audit History on `student`
+
+The `student` table is **system-versioned**. SQL Server automatically tracks every INSERT, UPDATE, and DELETE in a shadow history table `student_history`.
 
 ```sql
-USE luxuniversity_db;
+-- See what a student's record looked like on a specific past date
+SELECT * FROM student
+FOR SYSTEM_TIME AS OF '2023-06-01'
+WHERE student_matric_no = 'CST/2022/001';
 
-SELECT COUNT(*) AS faculty_count    FROM faculty;       -- Expected: 14
-SELECT COUNT(*) AS dept_count       FROM department;    -- Expected: 50+
-SELECT COUNT(*) AS course_count     FROM course;        -- Expected: 100+
-SELECT COUNT(*) AS student_count    FROM student;       -- Expected: 10
-SELECT COUNT(*) AS dim_course_count FROM dim_course;    -- Matches course table
+-- See all changes ever made to a student's record
+SELECT * FROM student
+FOR SYSTEM_TIME ALL
+WHERE student_matric_no = 'CST/2022/001'
+ORDER BY valid_from;
+
+-- See what all students looked like at the start of 2024/2025 session
+SELECT * FROM student
+FOR SYSTEM_TIME AS OF '2024-09-01';
+```
+
+This is a premium SQL Server feature — zero application code required for full auditing.
+
+### OLTP Views
+
+| View | Purpose |
+|---|---|
+| `vw_student_registration_summary` | Per-student course count, credit units, registration window status |
+| `vw_student_transcript` | Full academic transcript with scores and grades |
+| `vw_ser001_compliance` | Active 100L students showing SER001 registration status |
+| `vw_course_prereq_chain` | Every course with its prerequisites and minimum grade requirements |
+
+---
+
+## 5. Data Warehouse — luxuniversity_dw
+
+### Star Schema
+
+```
+                        ┌─────────────────┐
+                        │   dim_student   │
+                        │  (SCD Type 2)   │
+                        └────────┬────────┘
+                                 │
+┌──────────────┐        ┌────────▼────────────┐        ┌──────────────────────┐
+│  dim_course  ├────────►   fact_enrollment   ◄────────┤  dim_academic_period │
+└──────────────┘        │  (COLUMNSTORE IDX)  │        └──────────────────────┘
+                        └────────┬────────────┘
+┌──────────────┐                 │          ┌──────────────┐
+│  dim_staff   ├─────────────────┤          │  dim_date    │
+└──────────────┘                 │          └──────┬───────┘
+                                 │                 │
+┌──────────────┐        ┌────────▼────────────┐   │
+│ dim_geography├────────►   fact_student_gpa  ◄───┘
+└──────────────┘        │  (COLUMNSTORE IDX)  │
+                        └─────────────────────┘
+
+                        ┌─────────────────────┐
+                        │ fact_registration   │
+                        │      _event         │
+                        │  (COLUMNSTORE IDX)  │
+                        └─────────────────────┘
+```
+
+### SCD Type 2 on dim_student
+
+When the ETL detects that a student has changed programme, level, or status:
+
+1. Existing `dim_student` row is **closed**: `expiry_date = today`, `is_current = 0`
+2. New row is **inserted**: `effective_date = today`, `expiry_date = '9999-12-31'`, `is_current = 1`
+
+This lets analytical queries ask historical questions:
+
+```sql
+-- What faculty was this student in when they sat their 300L exams?
+SELECT fe.*, ds.faculty_name, ds.level_name
+FROM fact_enrollment fe
+JOIN dim_student ds ON fe.student_sk = ds.student_sk
+-- The surrogate key (student_sk) links to the SPECIFIC historical version
+WHERE ds.student_matric_no = 'CST/2022/001';
+```
+
+### Columnstore Indexes
+
+All three fact tables use `CLUSTERED COLUMNSTORE INDEX`. This replaces the default row-store clustering with column-based compression and batch-mode execution:
+
+```sql
+CREATE CLUSTERED COLUMNSTORE INDEX cci_fact_enrollment ON fact_enrollment;
+CREATE CLUSTERED COLUMNSTORE INDEX cci_fact_student_gpa ON fact_student_gpa;
+CREATE CLUSTERED COLUMNSTORE INDEX cci_fact_reg_event ON fact_registration_event;
+```
+
+**Why this matters:** A query like `AVG(grade_point) GROUP BY faculty_name` on a million-row fact table runs in seconds with columnstore vs. minutes with row-store.
+
+### dim_geography — Nigerian State Dimension
+
+All 37 Nigerian states (including FCT) are pre-loaded with geopolitical zone and region for demographic analysis:
+
+```sql
+-- Student distribution by geopolitical zone
+SELECT dg.geopolitical_zone, COUNT(DISTINCT ds.student_sk) AS students
+FROM dim_student ds
+JOIN dim_geography dg ON ds.state_of_origin = dg.state_name
+WHERE ds.is_current = 1
+GROUP BY dg.geopolitical_zone;
 ```
 
 ---
 
-## 3. Institutional Structure (OAU)
+## 6. ETL Pipeline
 
-The database models the complete OAU organisational hierarchy:
+### How It Works
 
 ```
-College (optional)
-  └── Faculty
-        └── Department
-              └── Programme (Degree)
+etl.sp_run_incremental_etl
+    │
+    ├── Step 0: Run DQ checks (sp_run_dq_checks)
+    │           └── If DQ ERRORs > 0 → ABORT and log FAILED
+    │
+    ├── Step 1: Read watermarks from luxuniversity_db.etl_watermark
+    │           └── One timestamp per entity (student, course, result, etc.)
+    │
+    ├── Step 2: Load dim_date (idempotent, 2021-2030)
+    │
+    ├── Step 3: Load dimension tables
+    │           ├── sp_load_dim_academic_period
+    │           ├── sp_load_dim_course
+    │           ├── sp_load_dim_staff
+    │           └── sp_load_dim_student_scd2  ← SCD Type 2 logic here
+    │
+    ├── Step 4: Load fact tables
+    │           ├── sp_load_fact_enrollment
+    │           ├── sp_load_fact_student_gpa
+    │           └── sp_load_fact_reg_events
+    │
+    ├── Step 5: Update watermarks in OLTP
+    │           └── SET last_extracted_at = GETDATE() per entity
+    │
+    └── Step 6: Log run to etl_log (SUCCESS / FAILED / PARTIAL)
 ```
 
-Four faculties sit under the **College of Health Sciences**. All others report directly.
+### Scheduling with SQL Server Agent
 
-| # | Faculty | Code | College |
-|---|---------|------|---------|
-| 1 | Faculty of Administration | ADMIN | — |
-| 2 | Faculty of Agriculture | AGRIC | — |
-| 3 | Faculty of Arts | ARTS | — |
-| 4 | Faculty of Basic Medical Sciences | BMS | College of Health Sciences |
-| 5 | Faculty of Clinical Sciences | CLINSCI | College of Health Sciences |
-| 6 | Faculty of Dentistry | DENT | College of Health Sciences |
-| 7 | Faculty of Education | EDU | — |
-| 8 | Faculty of Environmental Design and Management | EDM | — |
-| 9 | Faculty of Law | LAW | — |
-| 10 | Faculty of Pharmacy | PHARM | College of Health Sciences |
-| 11 | Faculty of Science | SCI | — |
-| 12 | Faculty of Social Sciences | SOC | — |
-| 13 | Faculty of Technology | TECH | — |
-| 14 | Faculty of Computing Science and Technology | CST | — |
+```sql
+-- Create a daily job at 1:00 AM
+USE msdb;
+EXEC sp_add_job @job_name = 'LuxUniversity DW Incremental ETL';
+EXEC sp_add_jobstep
+    @job_name = 'LuxUniversity DW Incremental ETL',
+    @step_name = 'Run ETL',
+    @command = 'EXEC luxuniversity_dw.etl.sp_run_incremental_etl;',
+    @database_name = 'luxuniversity_dw';
+EXEC sp_add_schedule @schedule_name = 'Daily 1AM',
+    @freq_type = 4, @freq_interval = 1,
+    @active_start_time = 010000;
+EXEC sp_attach_schedule @job_name = 'LuxUniversity DW Incremental ETL',
+    @schedule_name = 'Daily 1AM';
+EXEC sp_add_jobserver @job_name = 'LuxUniversity DW Incremental ETL';
+```
+
+### Force Full Reload
+
+```sql
+-- Use when OLTP data has been bulk-modified or after major schema changes
+EXEC luxuniversity_dw.etl.sp_run_incremental_etl @p_force_full_reload = 1;
+```
+
+### Monitor ETL Health
+
+```sql
+-- Run history
+SELECT etl_run_id, run_started_at, status,
+       rows_inserted, rows_updated, scd2_rows_closed,
+       dq_errors, dq_warnings,
+       DATEDIFF(SECOND, run_started_at, run_finished_at) AS duration_sec
+FROM luxuniversity_dw.dbo.etl_log
+ORDER BY etl_run_id DESC;
+
+-- DQ failures
+SELECT check_name, severity, records_flagged, detail, checked_at
+FROM luxuniversity_db.dbo.dq_check_log
+ORDER BY checked_at DESC;
+```
+
+---
+
+## 7. Row-Level Security
+
+Four roles with different data visibility, enforced at the SQL Server engine layer:
+
+| Role | What They See |
+|---|---|
+| `student_role` | Only their own `student` row, their own `course_registration` and `course_result` rows |
+| `lecturer_role` | All students registered in courses they are assigned to teach |
+| `faculty_admin_role` | All students in their faculty |
+| `registry_admin_role` | Everything — bypasses the RLS predicate entirely |
+| `dw_etl_user` | Read-only SELECT on OLTP tables (for ETL pipeline) |
+
+### How It Works
+
+The RLS inline function `fn_rls_student_predicate` is added as a FILTER PREDICATE and BLOCK PREDICATE on the `student` table. Every query that touches `student` automatically gets the predicate injected — no application code required.
+
+```sql
+-- A student user running this query only sees their own row
+SELECT * FROM student;
+
+-- A faculty admin only sees students in their faculty
+SELECT * FROM student;
+
+-- A registry admin sees everyone
+SELECT * FROM student;
+```
+
+### Assigning a User to a Role
+
+```sql
+-- Map a new student login
+INSERT INTO security_user_map (db_username, role_name, entity_id)
+VALUES ('matric_cst2024001', 'student', 
+        (SELECT student_id FROM student WHERE student_matric_no = 'CST/2024/001'));
+
+-- Add them to the database role
+ALTER ROLE student_role ADD MEMBER matric_cst2024001;
+```
+
+---
+
+## 8. Data Quality Framework
+
+10 DQ checks run before every ETL load. Results are logged to `luxuniversity_db.dbo.dq_check_log`.
+
+| Check ID | Name | Severity | Blocks ETL? |
+|---|---|---|---|
+| DQ-01 | Students with NULL programme_id | ERROR | Yes |
+| DQ-02 | Results with total_score > 100 | ERROR | Yes |
+| DQ-03 | Registrations after semester end date | WARNING | No |
+| DQ-04 | 100L students not registered for SER001 | WARNING | No |
+| DQ-05 | Students exceeding 24 credit unit limit | ERROR | Yes |
+| DQ-06 | Results for Dropped registrations | WARNING | No |
+| DQ-07 | Duplicate matric numbers | ERROR | Yes |
+| DQ-08 | Closed semesters with zero registrations | WARNING | No |
+| DQ-09 | Grade does not match total score range | ERROR | Yes |
+| DQ-10 | Registrations with no result after semester ended | WARNING | No |
+
+ERROR-severity failures abort the ETL and log `status = 'FAILED'` in `etl_log`. WARNING-severity issues are logged but ETL continues.
+
+---
+
+## 9. Reporting Layer (rpt Schema)
+
+All reporting views live in `luxuniversity_dw.rpt.*`. BI tools connect here — never directly to the OLTP.
+
+| View | Key Metrics |
+|---|---|
+| `rpt.vw_faculty_performance` | Pass rate, failure rate, distinction rate, avg GPA per faculty per semester |
+| `rpt.vw_at_risk_students` | Students with CGPA < 1.5 or 3+ failures, with risk level classification |
+| `rpt.vw_ser001_compliance_rate` | % of 100L students who registered SER001, by faculty per session |
+| `rpt.vw_course_failure_rate` | Failure rate per course — flags HIGH RISK (>40%) and ELEVATED (>25%) courses |
+| `rpt.vw_registration_behaviour` | Late registration rates, avg days before deadline, by faculty and level |
+| `rpt.vw_credit_load_distribution` | Min/max/avg credit units per student, by faculty and level |
+| `rpt.vw_student_diversity` | Student count and avg CGPA by geopolitical zone and faculty |
+| `rpt.vw_department_gpa_ranking` | Department league table ranked by CGPA (from `06_reporting_layer.sql`) |
+
+### Sample: Find at-risk students right now
+
+```sql
+USE luxuniversity_dw;
+SELECT * FROM rpt.vw_at_risk_students
+ORDER BY cgpa ASC;
+```
+
+### Sample: Which courses need curriculum review?
+
+```sql
+SELECT course_code, course_title, faculty_name, failure_rate_pct, risk_flag
+FROM rpt.vw_course_failure_rate
+WHERE risk_flag IN ('HIGH RISK', 'ELEVATED')
+ORDER BY failure_rate_pct DESC;
+```
+
+---
+
+## 10. Institutional Structure 
+
+The database models the complete OAU hierarchy:
+
+```
+College of Health Sciences (CHS)
+  └── Faculty of Basic Medical Sciences (BMS)
+  └── Faculty of Clinical Sciences (CLINSCI)
+  └── Faculty of Dentistry (DENT)
+  └── Faculty of Pharmacy (PHARM)
+
+Direct Reporting Faculties:
+  Faculty of Administration        (ADMIN)
+  Faculty of Agriculture           (AGRIC)
+  Faculty of Arts                  (ARTS)
+  Faculty of Education             (EDU)
+  Faculty of Environmental Design  (EDM)
+  Faculty of Law                   (LAW)
+  Faculty of Science               (SCI)
+  Faculty of Social Sciences       (SOC)
+  Faculty of Technology            (TECH)
+  Faculty of Computing Science     (CST)
+```
+
+### Matric Number Format
+
+Pattern: `FACULTY_CODE/ADMISSION_YEAR/SEQUENCE`
+
+| Example | Meaning |
+|---|---|
+| `CST/2024/001` | First CST student admitted in 2024/2025 |
+| `LAW/2020/001` | First Law student admitted in 2020/2021 |
+| `SCI/2024/001` | First Science student admitted in 2024/2025 |
 
 ### Programme Durations
 
-| Programme Type | Duration |
+| Degree | Duration |
 |---|---|
-| Standard B.Sc / B.A / LL.B / B.Ed | 4 years |
-| B.Eng / B.Agric / B.Pharm / Architecture | 5 years |
-| MBBS (Medicine and Surgery) | 6 years |
+| B.Sc, B.A, LL.B, B.Ed, B.Com | 4 years |
+| B.Eng, B.Agric, B.Pharm, B.Arch | 5 years |
+| MBBS, B.DS | 6 years |
 
 ---
 
-## 4. Schema Design
+## 11. Course System
 
-### 4.1 OLTP Tables
-
-| Table | Group | Purpose |
-|---|---|---|
-| `academic_session` | Reference | Academic years e.g. `2024/2025` with start/end dates and active flag |
-| `semester` | Reference | First and Second semesters with registration deadlines |
-| `student_level` | Reference | 100L through 700L with numeric values for promotion logic |
-| `degree_type` | Reference | B.Sc, B.A, MBBS, LL.B, B.Pharm, B.Eng, B.Agric, B.DS, B.Ed |
-| `college` | Structure | College of Health Sciences grouping |
-| `faculty` | Structure | All 14 OAU faculties |
-| `department` | Structure | All departments with Head of Department field |
-| `programme` | Structure | Degree programmes per department with duration in years |
-| `course_category` | Reference | MAJOR, ELECTIVE, COMPULSORY_SE, GEN_STUDIES, COMMON |
-| `course` | Catalog | Full course catalog with code, title, description, credit units, level |
-| `course_prerequisite` | Catalog | Self-referencing prerequisite map with minimum grade thresholds |
-| `programme_course` | Mapping | Courses assigned to programmes with type classification |
-| `student` | Core | Enrolled students with programme, current level, and status |
-| `student_level_history` | Core | GPA, CGPA, and credits earned per student per session |
-| `course_registration` | Core | Student course registrations per semester |
-| `registration_audit` | Audit | Log of all registration attempts including late/rejected |
-| `grade_scale` | Reference | A=5.0 GP down to F=0.0 GP with score ranges |
-| `course_result` | Core | CA score, exam score, computed total, grade, and grade point |
-| `staff` | HR | Academic staff with department and designation |
-| `course_assignment` | Schedule | Lecturer assignments to courses per semester |
-
-### 4.2 Dimensional Tables (Star Schema)
-
-```
-                  ┌─────────────┐
-                  │ dim_student │
-                  └──────┬──────┘
-                         │
-┌─────────────┐   ┌──────▼──────────┐   ┌──────────────────────┐
-│  dim_course ├───► fact_enrollment  ◄───┤ dim_academic_period  │
-└─────────────┘   └──────┬──────────┘   └──────────────────────┘
-                         │
-                  ┌──────▼──────┐
-                  │  dim_date   │
-                  └─────────────┘
-```
-
-| Table | Type | Purpose |
-|---|---|---|
-| `dim_date` | Dimension | Date dimension 2021–2025: day, month, quarter, weekend flag |
-| `dim_student` | Dimension | Type 2 SCD snapshot — supports historical GPA analysis |
-| `dim_course` | Dimension | Flattened course attributes including faculty and department |
-| `dim_academic_period` | Dimension | Session and semester combination with registration deadline |
-| `fact_enrollment` | Fact | One row per student-course-semester with scores, grade, pass/fail |
-| `fact_student_gpa` | Fact | Aggregated GPA per student per session |
-| `fact_registration_event` | Fact | Registration timing relative to deadline for compliance analytics |
-
----
-
-## 5. Course System
-
-### 5.1 Three-Tier Course Classification
-
-Every course assigned to a programme carries exactly one type:
+### Three-Tier Classification
 
 | Type | Description | Example |
 |---|---|---|
-| `MAJOR` | Core departmental courses — compulsory within the programme | `CSC301 Operating Systems` for CS students |
-| `ELECTIVE` | Optional — student selects from an approved list | `CSC405 Cloud Computing` |
-| `COMPULSORY_SE` | University-wide compulsory special elective for all students | `SER001 Use of English` for every 100L student |
+| `MAJOR` | Core departmental course — compulsory within programme | `CSC301 Operating Systems` |
+| `ELECTIVE` | Optional — student chooses from approved list | `CSC405 Cloud Computing` |
+| `COMPULSORY_SE` | University-wide — every student at a given level must register | `SER001 Use of English` |
 
-### 5.2 SER001 — Compulsory Special Elective
-
-`SER001 (Use of English)` is the only `COMPULSORY_SE` course in the base dataset, though the schema supports as many as needed.
+### SER001 — Compulsory Special Elective
 
 - Owned by the **English Department, Faculty of Arts**
-- Mapped to **every programme** via `programme_course` with `course_type = 'COMPULSORY_SE'`
-- Flagged `is_compulsory_se = 1` on the `course` table
-- Targeted at **100L, First Semester**
-- Compliance is monitored via `vw_ser001_compliance`
+- `is_compulsory_se = 1` on the `course` table
+- Mapped to every programme as `COMPULSORY_SE` in `programme_course`
+- Targeted at 100L, First Semester
+- Non-compliance surfaced by `vw_ser001_compliance` in OLTP and `rpt.vw_ser001_compliance_rate` in DW
 
-```sql
--- Check which 100L students have NOT registered SER001
-SELECT * FROM vw_ser001_compliance
-WHERE ser001_status = 'NOT Registered';
-```
+### Prerequisite Modelling
 
-### 5.3 Prerequisite Modelling
-
-The `course_prerequisite` table is a **self-referencing many-to-many** on the `course` table.
-
-**How it works:**
-
-```
-course_prerequisite
-┌──────────────┬────────────────────┬────────────┐
-│  course_id   │ required_course_id │  min_grade │
-├──────────────┼────────────────────┼────────────┤
-│ CSC401 (AI)  │ CSC302 (DBMS)      │     E      │
-│ CSC401 (AI)  │ CSC303 (Networks)  │     E      │
-│ ECO301       │ ECO201             │     C      │  ← stricter
-│ AIT301       │ AIT202             │     D      │
-└──────────────┴────────────────────┴────────────┘
-```
-
-Key rules:
-- A course can declare **multiple prerequisites** — one row per requirement
-- `min_grade` is configurable per relationship — some require grade C, others only E
-- A `CHECK` constraint prevents self-referencing: `course_id <> required_course_id`
-- `sp_register_course` **automatically validates all prerequisites** before registration
-
-**Prerequisite chains in the sample data:**
+Self-referencing many-to-many on `course`. Each prerequisite has a configurable `min_grade`:
 
 ```
 CSC102 ──► CSC201 ──► CSC301
-                 ──► CSC302 ──► CSC401 (also requires CSC303)
+                 ──► CSC302 ──► CSC401 (also requires CSC303, min grade E)
 AIT201 ──► AIT202 ──► AIT301 ──► AIT302
-ECO201 ──► ECO301 (min C) ──► ECO401
+ECO201 ──► ECO301 (min grade C — stricter) ──► ECO401
 BCH201 ──► BCH202 ──► BCH301
 ```
 
----
-
-## 6. Business Rules & Enforcement
-
-All rules are enforced **at the database layer**, not just in application code.
-
-| Rule | Enforcement | Detail |
-|---|---|---|
-| Registration deadline must not be exceeded | SP + Audit | `sp_register_course` checks `CAST(GETDATE() AS DATE) > reg_deadline`; late attempts logged to `registration_audit` |
-| All prerequisites must be passed before registration | SP | Procedure queries `course_prerequisite` and `course_result` to verify grade >= `min_grade` per prerequisite |
-| SER001 is compulsory for all 100-level students | Schema + View | `is_compulsory_se=1`; mapped to every programme as `COMPULSORY_SE`; `vw_ser001_compliance` surfaces non-compliance |
-| A course cannot be its own prerequisite | CHECK | `chk_no_self_prereq`: `course_id <> required_course_id` |
-| Registration deadline must fall within semester dates | CHECK | `chk_reg_deadline`: `reg_deadline <= end_date` |
-| No duplicate registrations per student per semester | UNIQUE | `uq_student_course_sem`: UNIQUE(`student_id`, `course_id`, `semester_id`) |
-| Course type must be MAJOR, ELECTIVE, or COMPULSORY_SE | CHECK | `chk_reg_type` on `course_registration`; `chk_pc_type` on `programme_course` |
-| Enrollment status restricted to valid values | CHECK | Active, Suspended, Withdrawn, Graduated, Deferred |
+`sp_register_course` automatically validates all prerequisites before inserting a registration. Failures are logged to `registration_audit`.
 
 ---
 
-## 7. Stored Procedures
+## 12. Business Rules & Enforcement
+
+All rules are enforced at the **database engine layer**, not application code. Application bugs cannot bypass them.
+
+| Rule | Where Enforced |
+|---|---|
+| Registration deadline cannot be exceeded | `sp_register_course` — checks `CAST(GETDATE() AS DATE) > reg_deadline`; rejects and logs to `registration_audit` |
+| All prerequisites must be passed | `sp_register_course` — queries `course_prerequisite` + `course_result`; checks grade >= `min_grade` |
+| Max 24 credit units per semester | `sp_register_course` — sums current credit load before registering |
+| SER001 is compulsory for all 100L students | Schema (`is_compulsory_se=1`, `programme_course` mapping) + DQ check DQ-04 |
+| A course cannot be its own prerequisite | `CHECK` constraint: `course_id <> required_course_id` |
+| Registration deadline within semester dates | `CHECK` constraint: `reg_deadline <= end_date` |
+| No duplicate registrations | `UNIQUE` constraint on `(student_id, course_id, semester_id)` |
+| Course type must be valid | `CHECK` on `course_registration.course_type_taken` |
+| Enrollment status restricted to valid values | `CHECK` on `student.enrollment_status` |
+| Semester names restricted to First/Second | `CHECK` on `semester.semester_name` |
+
+---
+
+## 13. Stored Procedures
+
+### OLTP Procedures
 
 | Procedure | Parameters | Description |
 |---|---|---|
-| `sp_register_course` | `@student_id`, `@course_id`, `@semester_id`, `@course_type`, `@result OUTPUT` | Validates deadline, duplicate check, and all prerequisites before inserting the registration |
-| `sp_promote_student` | `@student_id`, `@session_id`, `@result OUTPUT` | Calculates session GPA and promotes the student to the next level |
-| `sp_get_student_courses` | `@matric_no`, `@semester_id` | Returns all courses registered by a student in a given semester |
-| `sp_get_transcript` | `@matric_no` | Returns the full academic transcript ordered by session and semester |
+| `sp_register_course` | `@student_id`, `@course_id`, `@semester_id`, `@course_type`, `@result OUTPUT` | Validates deadline, credit load, duplicates, and prerequisites before inserting |
+| `sp_promote_student` | `@student_id`, `@session_id`, `@result OUTPUT` | Calculates GPA, updates level, merges into `student_level_history` |
+| `sp_get_student_courses` | `@matric_no`, `@semester_id` | All courses for a student in a given semester |
+| `sp_get_transcript` | `@matric_no` | Full academic transcript |
+
+### ETL Procedures (luxuniversity_dw.etl.*)
+
+| Procedure | Purpose |
+|---|---|
+| `etl.sp_run_incremental_etl` | Master entry point — orchestrates all steps |
+| `etl.sp_run_dq_checks` | Runs all 10 DQ checks, logs results, returns error/warning counts |
+| `etl.sp_load_dim_date` | Idempotent date dimension load (2021–2030) |
+| `etl.sp_load_dim_academic_period` | Loads semesters + sessions |
+| `etl.sp_load_dim_course` | Loads course dimension with faculty/dept context |
+| `etl.sp_load_dim_staff` | Loads staff dimension |
+| `etl.sp_load_dim_student_scd2` | SCD Type 2 — detects changes, closes old rows, inserts new |
+| `etl.sp_load_fact_enrollment` | Loads enrollment fact with boolean flags |
+| `etl.sp_load_fact_student_gpa` | Loads aggregate GPA fact |
+| `etl.sp_load_fact_reg_events` | Loads registration events including rejected attempts |
 
 ### Usage Examples
 
-**Register a course:**
-
 ```sql
+-- Register a course
 DECLARE @result NVARCHAR(500);
-
 EXEC sp_register_course
     @p_student_id  = 1,
     @p_course_id   = 5,
     @p_semester_id = 7,
     @p_course_type = N'MAJOR',
     @p_result      = @result OUTPUT;
-
 SELECT @result;
 -- 'SUCCESS: Course registered successfully.'
 -- 'ERROR: Registration deadline has passed.'
 -- 'ERROR: 2 prerequisite(s) not satisfied.'
-```
+-- 'ERROR: Registration would exceed 24 credit unit maximum.'
 
-**Get a student transcript:**
-
-```sql
+-- Get transcript
 EXEC sp_get_transcript N'CST/2022/001';
-```
 
-**Get courses for a semester:**
-
-```sql
-EXEC sp_get_student_courses N'CST/2024/001', 7;
-```
-
-**Promote a student after results:**
-
-```sql
+-- Promote student after session
 DECLARE @result NVARCHAR(500);
 EXEC sp_promote_student 1, 4, @result OUTPUT;
-SELECT @result;
--- 'SUCCESS: Promoted to 200L.'
+SELECT @result;  -- 'SUCCESS: Promoted to 200L. GPA: 3.50'
+
+-- Run ETL
+EXEC luxuniversity_dw.etl.sp_run_incremental_etl;
 ```
 
 ---
 
-## 8. Views
+## 14. Analytical Queries
 
-| View | Description |
-|---|---|
-| `vw_student_registration_summary` | Per-student registration count, total credit units, and deadline open/closed status for the current semester |
-| `vw_student_transcript` | Full academic transcript joining student, courses, results, and session context |
-| `vw_ser001_compliance` | All active 100L students with their SER001 registration status |
-| `vw_course_prereq_chain` | Every course alongside its prerequisites with level context — useful for curriculum planning |
-
-### Sample Queries
+### OLTP Queries
 
 ```sql
 -- Current semester registration overview
-SELECT * FROM vw_student_registration_summary
-ORDER BY faculty_name, student_name;
+SELECT * FROM vw_student_registration_summary ORDER BY faculty_name;
 
--- One student's full transcript
-SELECT * FROM vw_student_transcript
-WHERE student_matric_no = 'CST/2022/001'
-ORDER BY session_name, semester_name;
+-- SER001 compliance check
+SELECT * FROM vw_ser001_compliance WHERE ser001_status = 'NOT Registered';
 
 -- Full prerequisite chain
-SELECT * FROM vw_course_prereq_chain
-ORDER BY course_level, course_code;
+SELECT * FROM vw_course_prereq_chain ORDER BY course_level, course_code;
+```
+
+### DW / Analytical Queries
+
+```sql
+-- Faculty performance comparison
+SELECT * FROM rpt.vw_faculty_performance ORDER BY avg_grade_point DESC;
+
+-- Courses with high failure rates (curriculum red flags)
+SELECT course_code, course_title, failure_rate_pct, risk_flag
+FROM rpt.vw_course_failure_rate
+WHERE risk_flag != 'NORMAL'
+ORDER BY failure_rate_pct DESC;
+
+-- At-risk students for academic support intervention
+SELECT student_matric_no, full_name, faculty_name, cgpa, courses_failed, risk_level
+FROM rpt.vw_at_risk_students
+ORDER BY cgpa ASC;
+
+-- Registration behaviour — which faculty registers latest?
+SELECT faculty_name, avg_days_before_deadline, late_rate_pct
+FROM rpt.vw_registration_behaviour
+ORDER BY avg_days_before_deadline ASC;
+
+-- Student diversity by geopolitical zone
+SELECT geopolitical_zone, region, student_count, avg_cgpa
+FROM rpt.vw_student_diversity
+ORDER BY student_count DESC;
+
+-- Year-over-year GPA trends by faculty
+SELECT ds.faculty_name, dp.session_name,
+       ROUND(AVG(CAST(fg.session_gpa AS FLOAT)), 2) AS avg_gpa
+FROM luxuniversity_dw.dbo.fact_student_gpa fg
+JOIN luxuniversity_dw.dbo.dim_student ds ON fg.student_sk = ds.student_sk AND ds.is_current = 1
+JOIN luxuniversity_dw.dbo.dim_academic_period dp ON fg.period_sk = dp.period_sk
+GROUP BY ds.faculty_name, dp.session_name
+ORDER BY ds.faculty_name, dp.session_name;
 ```
 
 ---
 
-## 9. Analytical Queries (Dimensional Model)
+## 16. Design Decisions
 
-**Average grade point per faculty:**
+### Why separate OLTP and DW databases?
 
-```sql
-SELECT
-    ds.faculty_name,
-    ROUND(AVG(CAST(fe.grade_point AS FLOAT)), 2) AS avg_grade_point,
-    COUNT(DISTINCT fe.student_sk)                AS student_count
-FROM   fact_enrollment fe
-JOIN   dim_student ds ON fe.student_sk = ds.student_sk
-GROUP  BY ds.faculty_name
-ORDER  BY avg_grade_point DESC;
-```
+OLTP and OLAP have conflicting needs. OLTP needs low-latency row-level reads and writes with minimal locking. OLAP needs full-table column scans with batch aggregation. Sharing a database means analytical queries block transactions and row-store indexes hurt scan performance. Industry standard is complete separation.
 
-**Top performing courses:**
+### Why SCD Type 2 on dim_student only?
 
-```sql
-SELECT
-    dc.course_code,
-    dc.course_title,
-    ROUND(AVG(CAST(fe.total_score AS FLOAT)), 1) AS avg_score,
-    COUNT(*)                                      AS enrollments
-FROM   fact_enrollment fe
-JOIN   dim_course dc ON fe.course_sk = dc.course_sk
-GROUP  BY dc.course_sk, dc.course_code, dc.course_title
-ORDER  BY avg_score DESC;
-```
+`dim_student` carries attributes that genuinely change over time (level, programme, status) and where historical accuracy matters — if a student was in Faculty of Science when they passed a course in 2022, that fact must be preserved even after they transfer. `dim_course` uses Type 1 (overwrite) because course metadata changes are corrections, not meaningful historical events.
 
-**Registration deadline compliance by faculty:**
+### Why NVARCHAR instead of VARCHAR?
 
-```sql
-SELECT
-    ds.faculty_name,
-    SUM(CASE WHEN re.was_late = 1 THEN 1 ELSE 0 END) AS late_registrations,
-    COUNT(*)                                          AS total_registrations,
-    ROUND(
-        100.0 * SUM(CASE WHEN re.was_late = 1 THEN 1 ELSE 0 END) / COUNT(*), 1
-    ) AS late_pct
-FROM   fact_registration_event re
-JOIN   dim_student ds ON re.student_sk = ds.student_sk
-GROUP  BY ds.faculty_name
-ORDER  BY late_pct DESC;
-```
+Nigerian names frequently include diacritics and characters outside ASCII. NVARCHAR uses UTF-16 encoding and handles all of them. The storage overhead is negligible for this dataset size.
 
-**Pass rate by academic level:**
+### Why PERSISTED computed columns?
 
-```sql
-SELECT
-    dc.level_name,
-    COUNT(*)                                                    AS total_results,
-    SUM(CAST(fe.is_pass AS INT))                                AS passed,
-    ROUND(100.0 * SUM(CAST(fe.is_pass AS INT)) / COUNT(*), 1)  AS pass_rate_pct
-FROM   fact_enrollment fe
-JOIN   dim_course dc ON fe.course_sk = dc.course_sk
-GROUP  BY dc.level_name
-ORDER  BY dc.level_name;
-```
+`total_score AS (ISNULL(ca_score,0) + ISNULL(exam_score,0)) PERSISTED` stores the result on disk rather than computing it at query time. This means the value is indexable and available to the ETL without re-calculation.
+
+### Why `RETURN` instead of `RAISERROR` in stored procedures?
+
+`RAISERROR` with high severity rolls back calling transactions and produces error output that some client tools handle poorly. Using `RETURN` with an OUTPUT parameter for the result message keeps the procedure behaviour clean and predictable — the caller decides what to do with a rejection message.
+
+### Why `SET XACT_ABORT ON` in the ETL master procedure?
+
+`SET XACT_ABORT ON` means any run-time error automatically rolls back the entire transaction. Without it, a partial failure in the middle of an ETL run could leave the DW in an inconsistent state with some dimensions loaded but not others. Pairing this with `BEGIN TRY / BEGIN CATCH` gives precise error capture with clean rollback.
+
+### Why enforce business rules at the database layer?
+
+Application code can be bypassed — direct database connections, SSMS queries, bulk imports. Constraints, CHECK constraints, stored procedure logic, and RLS predicates cannot be bypassed regardless of how a user connects. Every critical rule in this system is enforced at the engine level.
 
 ---
 
-## 10. File Guide
 
-```
-luxuniversity_db/
-├── 01_create_tables.sql        # DDL: database, tables, views, procedures, indexes
-├── 02_insert_sample_data.sql   # DML: reference data, faculties, courses, students
-└── README.md                   # This file
-```
 
-| File | Contents |
+### Roadmap
+
+| Feature | What It Would Add |
 |---|---|
-| `01_create_tables.sql` | Creates `luxuniversity_db`, all 32 tables, 4 views, 4 stored procedures, and 11 performance indexes. **Safe to re-run** — drops and recreates the database. |
-| `02_insert_sample_data.sql` | Inserts grade scale, 7 student levels, 11 degree types, 14 faculties, 50+ departments, 50+ programmes, 100+ courses with full descriptions, 10 sample students across 6 faculties, course registrations, results, staff, and the full dimensional model. |
+| Exam timetabling module | `exam_timetable`, venue allocation, clash detection |
+| Hostel management | `hostel_room`, `hostel_allocation`, capacity tracking |
+| Fees & finance | Fee schedules, payment tracking, outstanding balance alerts |
+| Library system | Material catalog, borrowing records, fine calculation |
+| Azure Data Factory pipeline | Replace cross-database ETL with cloud-native orchestration |
+| Power BI template | Pre-built dashboards connecting to `rpt.*` views |
+| ERD diagram | Visual schema diagram committed to repository |
 
 ---
+### Verify Everything Works
 
-## 11. Matric Number Format
+```sql
+-- OLTP checks
+USE luxuniversity_db;
+SELECT COUNT(*) AS faculties    FROM faculty;           -- 14
+SELECT COUNT(*) AS departments  FROM department;        -- 50+
+SELECT COUNT(*) AS courses      FROM course;            -- 100+
+SELECT COUNT(*) AS students     FROM student;           -- 10
+SELECT COUNT(*) AS registrations FROM course_registration; -- 24+
 
-Pattern: `FACULTY_CODE/ADMISSION_YEAR/SEQUENCE`
+-- DW checks
+USE luxuniversity_dw;
+SELECT COUNT(*) AS dim_students  FROM dim_student;      -- 10+
+SELECT COUNT(*) AS dim_courses   FROM dim_course;       -- 100+
+SELECT COUNT(*) AS fact_rows     FROM fact_enrollment;  -- 24+
+SELECT status, COUNT(*) FROM etl_log GROUP BY status;   -- should show SUCCESS
 
-| Example | Faculty | Meaning |
-|---|---|---|
-| `CST/2024/001` | Computing Science and Technology | First CST student admitted 2024/2025 |
-| `SOC/2024/001` | Social Sciences | First Social Sciences student admitted 2024 |
-| `LAW/2020/001` | Law | First Law student admitted 2020/2021 |
-| `TECH/2023/001` | Technology | First Technology student admitted 2023/2024 |
-| `SCI/2024/001` | Science | First Science student admitted 2024/2025 |
+-- ETL log
+SELECT etl_run_id, status, rows_inserted, dq_errors, dq_warnings,
+       DATEDIFF(SECOND, run_started_at, run_finished_at) AS duration_sec
+FROM etl_log ORDER BY etl_run_id DESC;
 
----
-
-## 12. Extending the Database
-
-| Extension | Tables to Add |
-|---|---|
-| **Exam Timetabling** | `exam_timetable (course_id, semester_id, exam_date, venue, invigilator_id)` |
-| **Hostel Management** | `hostel`, `hostel_room`, `hostel_allocation (student_id, room_id, session_id)` |
-| **Fees and Finance** | `fee_schedule`, `student_fee_account`, `payment (student_id, amount, date, channel)` |
-| **Library System** | `library_material`, `borrowing_record`, `library_fine` |
-| **Student Portal Auth** | `user_account (student_id, username, password_hash, last_login)` |
-| **Additional Compulsory SE** | Set `is_compulsory_se = 1` on any course; map to all programmes in `programme_course` |
-
----
-
-## 13. Developer Notes
-
-### Key SQL Server Design Choices
-
-| Decision | Reason |
-|---|---|
-| `NVARCHAR` for all text | Supports Unicode — important for Nigerian names with diacritics |
-| `IDENTITY(1,1)` surrogate keys | Standard SQL Server auto-increment primary keys |
-| `BIT` for boolean flags | SQL Server standard; `1 = true`, `0 = false` |
-| `DATETIME2` for timestamps | Higher precision and wider range than legacy `DATETIME` |
-| `AS (...) PERSISTED` on `total_score` | Computed column stored on disk for query performance |
-| `CREATE OR ALTER VIEW/PROC` | Idempotent DDL — safe to re-run without dropping first |
-| `GO` batch separators | Required for correct DDL execution order in SQL Server |
-| Recursive CTE for `dim_date` | With `OPTION (MAXRECURSION 2000)` for the 5-year date range |
-| `RETURN` in stored procedures | Clean early-exit without `RAISERROR` — keeps logic testable |
-| `SET NOCOUNT ON` in all procs | Suppresses row-count messages for cleaner client output |
-
-### Grade Scale
-
-| Grade | Score Range | Grade Points | Remark |
-|---|---|---|---|
-| A | 70 – 100 | 5.0 | Excellent |
-| B | 60 – 69 | 4.0 | Good |
-| C | 50 – 59 | 3.0 | Average |
-| D | 45 – 49 | 2.0 | Pass |
-| E | 40 – 44 | 1.0 | Marginal Pass |
-| F | 0 – 39 | 0.0 | Fail |
-
----
+-- Temporal table — time-travel query
+SELECT * FROM luxuniversity_db.dbo.student
+FOR SYSTEM_TIME AS OF '2024-01-01';
+```
 
 ## Contributing
 
-Pull requests are welcome. For major schema changes, please open an issue first to discuss the proposed design.
+Pull requests are welcome. For significant schema or ETL changes, open an issue first to discuss the design impact on existing procedures and views.
 
 ---
 
-## License
-
-MIT — free to use, modify, and distribute with attribution.
-
----
-
-*LuxUniversity DB v1.0 — Microsoft SQL Server Edition*
