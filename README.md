@@ -14,20 +14,19 @@
 
 1. [Architecture Overview](#1-architecture-overview)
 2. [Quick Start](#2-quick-start)
-3. [File Guide](#4-file-guide)
-5. [OLTP Database — luxuniversity_db](#5-oltp-database--luxuniversity_db)
-6. [Data Warehouse — luxuniversity_dw](#6-data-warehouse--luxuniversity_dw)
-7. [ETL Pipeline](#7-etl-pipeline)
-8. [Row-Level Security](#8-row-level-security)
-9. [Data Quality Framework](#9-data-quality-framework)
-10. [Reporting Layer](#10-reporting-layer-rpt-schema)
-11. [Institutional Structure](#11-institutional-structure-oau)
-12. [Course System](#12-course-system)
-13. [Business Rules](#13-business-rules--enforcement)
-14. [Stored Procedures](#14-stored-procedures)
-15. [Analytical Queries](#15-analytical-queries)
-16. [Design Decisions](#16-design-decisions)
-17. [Known Limitations & Roadmap](#17-known-limitations--roadmap)
+3. [File Guide](#3-file-guide)
+4. [OLTP Database — luxuniversity_db](#4-oltp-database--luxuniversity_db)
+5. [Data Warehouse — luxuniversity_dw](#5-data-warehouse--luxuniversity_dw)
+6. [ETL Pipeline](#6-etl-pipeline)
+7. [Row-Level Security](#7-row-level-security)
+8. [Data Quality Framework](#8-data-quality-framework)
+9. [Reporting Layer](#9-reporting-layer-rpt-schema)
+10. [Institutional Structure](#10-institutional-structure)
+11. [Course System](#11-course-system)
+12. [Business Rules](#12-business-rules--enforcement)
+13. [Stored Procedures](#13-stored-procedures)
+14. [Analytical Queries](#14-analytical-queries)
+15. [Design Decisions](#15-design-decisions)
 
 ---
 
@@ -102,16 +101,6 @@ This project separates transactional and analytical workloads into two dedicated
 
 ## 3. File Guide
 
-```
-luxuniversity_db/
-├── 01_create_oltp.sql          ← Run first
-├── 02_create_dw.sql            ← Run second
-├── 03_insert_sample_data.sql   ← Run third
-├── 04_etl_incremental.sql      ← Run fourth (or schedule)
-├── 05_row_level_security.sql   ← Optional: users & RLS
-├── 06_reporting_layer.sql      ← Optional: extra rpt views
-└── README.md                   ← This file
-```
 
 | File | What it Creates | Key Features |
 |---|---|---|
@@ -175,8 +164,6 @@ ORDER BY valid_from;
 SELECT * FROM student
 FOR SYSTEM_TIME AS OF '2024-09-01';
 ```
-
-This is a premium SQL Server feature — zero application code required for full auditing.
 
 ### OLTP Views
 
@@ -439,7 +426,7 @@ ORDER BY failure_rate_pct DESC;
 
 ## 10. Institutional Structure 
 
-The database models the complete OAU hierarchy:
+The database models the complete Nigerian tertiary institution hierarchy:
 
 ```
 College of Health Sciences (CHS)
@@ -645,7 +632,7 @@ ORDER BY ds.faculty_name, dp.session_name;
 
 ---
 
-## 16. Design Decisions
+## 15. Design Decisions
 
 ### Why separate OLTP and DW databases?
 
@@ -669,7 +656,7 @@ Nigerian names frequently include diacritics and characters outside ASCII. NVARC
 
 ### Why `SET XACT_ABORT ON` in the ETL master procedure?
 
-`SET XACT_ABORT ON` means any run-time error automatically rolls back the entire transaction. Without it, a partial failure in the middle of an ETL run could leave the DW in an inconsistent state with some dimensions loaded but not others. Pairing this with `BEGIN TRY / BEGIN CATCH` gives precise error capture with clean rollback.
+`SET XACT_ABORT ON` means any run-time error automatically rolls back the entire transaction. Without it, a partial failure in the middle of an ETL run could leave the DW in an inconsistent state, with some dimensions loaded but not others. Pairing this with `BEGIN TRY / BEGIN CATCH` gives precise error capture with clean rollback.
 
 ### Why enforce business rules at the database layer?
 
@@ -678,20 +665,6 @@ Application code can be bypassed — direct database connections, SSMS queries, 
 ---
 
 
-
-### Roadmap
-
-| Feature | What It Would Add |
-|---|---|
-| Exam timetabling module | `exam_timetable`, venue allocation, clash detection |
-| Hostel management | `hostel_room`, `hostel_allocation`, capacity tracking |
-| Fees & finance | Fee schedules, payment tracking, outstanding balance alerts |
-| Library system | Material catalog, borrowing records, fine calculation |
-| Azure Data Factory pipeline | Replace cross-database ETL with cloud-native orchestration |
-| Power BI template | Pre-built dashboards connecting to `rpt.*` views |
-| ERD diagram | Visual schema diagram committed to repository |
-
----
 ### Verify Everything Works
 
 ```sql
@@ -719,10 +692,6 @@ FROM etl_log ORDER BY etl_run_id DESC;
 SELECT * FROM luxuniversity_db.dbo.student
 FOR SYSTEM_TIME AS OF '2024-01-01';
 ```
-
-## Contributing
-
-Pull requests are welcome. For significant schema or ETL changes, open an issue first to discuss the design impact on existing procedures and views.
 
 ---
 
